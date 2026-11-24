@@ -1,2 +1,8 @@
-openai
-python-dotenv
+# 大版本上限：openai 的 API 在 1.x / 3.x 之间保持兼容（本项目只用
+# chat.completions + tools），所以不锁死小版本，但避免跨大版本漂移。
+#
+# 注意：如果 `import openai` 报
+#   AttributeError: module 'aiohttp' has no attribute 'SocketTimeoutError'
+# 说明本机 aiohttp 太旧，升级即可：pip install -U "aiohttp>=3.10"
+openai>=1.40,<4.0
+python-dotenv>=1.0,<2.0

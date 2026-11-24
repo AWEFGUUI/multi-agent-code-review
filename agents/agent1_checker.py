@@ -1,6 +1,10 @@
 import ast
 import importlib.util
+import sys
+
+from utils.issue_tags import ISSUES_INSTRUCTION
 from utils.llm_client import get_client
+from utils.llm_parse import parse_llm_output as _parse  # noqa: F401  （对外仍导出 parse_llm_output）
 
 
 SYSTEM_PROMPT = """你是一个代码审查专家，负责检查 Python 代码的可运行性。
@@ -10,10 +14,34 @@ SYSTEM_PROMPT = """你是一个代码审查专家，负责检查 Python 代码�
 2. 如果有问题，直接修改代码
 3. 输出修改后的完整代码
 
+重要原则：
+- 修改后必须保持功能不变。
+- 不要在没有必要时新增 print、删掉调用或吞掉异常，那会改变程序行为。
+- 如果代码只有语法错误，修好语法即可；不要顺手补类型注解、改名等规范性改动。
+
 输出格式：
 - 先输出一段 Markdown 说明（修改点列表 + 理由）
 - 然后用 python 代码块输出修改后的完整代码
-"""
+""" + ISSUES_INSTRUCTION
+
+
+def parse_llm_output(text: str) -> dict:
+    """向后兼容的入口，真正实现已统一到 utils.llm_parse。"""
+    return _parse(text, require_code=False)
+
+
+def _stdlib_names() -> set[str]:
+    """3.10+ 自带全集；低版本退回一个常见集合。"""
+    names = getattr(sys, "stdlib_module_names", None)
+    if names:
+        return set(names)
+    return {
+        "os", "sys", "re", "json", "time", "datetime", "math", "random",
+        "ast", "importlib", "argparse", "pathlib", "typing", "collections",
+        "itertools", "functools", "subprocess", "logging", "io", "copy",
+        "unittest", "csv", "sqlite3", "hashlib", "dataclasses", "asyncio",
+        "textwrap", "shutil", "tempfile", "traceback", "statistics",
+    }
 
 
 def static_check(code: str) -> dict:
@@ -48,46 +76,27 @@ def static_check(code: str) -> dict:
 
     result["imports"] = sorted(imports)
 
-    # 3. 检查依赖是否安装（跳过标准库）
-    stdlib = {
-        "os", "sys", "re", "json", "time", "datetime", "math", "random",
-        "ast", "importlib", "argparse", "pathlib", "typing", "collections",
-        "itertools", "functools", "subprocess", "logging", "io", "copy",
-    }
+    # 3. 检查依赖是否安装
+    #    原来手写了一份 stdlib 白名单，漏了 unittest/csv/sqlite3 等，
+    #    会把标准库误报成“缺依赖”；现在用 sys.stdlib_module_names。
+    stdlib = _stdlib_names()
     for pkg in imports:
-        if pkg in stdlib:
+        if pkg in stdlib or pkg == "__future__":
             continue
-        spec = importlib.util.find_spec(pkg)
+        try:
+            spec = importlib.util.find_spec(pkg)
+        except (ImportError, ModuleNotFoundError, ValueError):
+            spec = None
         if spec is None:
             result["missing"].append(pkg)
 
     return result
 
 
-def parse_llm_output(text: str) -> dict:
-    """
-    从 LLM 输出里提取「说明」和「代码」。
-    返回：{"explanation": str, "code": str}
-    """
-    if "```python" in text:
-        parts = text.split("```python")
-        explanation = parts[0].strip()
-        code = parts[1].split("```")[0].strip() if len(parts) > 1 else ""
-    elif "```" in text:
-        parts = text.split("```")
-        explanation = parts[0].strip()
-        code = parts[1].strip() if len(parts) > 1 else ""
-    else:
-        explanation = text.strip()
-        code = ""
-
-    return {"explanation": explanation, "code": code}
-
-
 def run(code: str, context: str = "") -> dict:
     """
     执行 Agent 1。
-    返回：{"code": 修改后代码, "explanation": 说明, "static": 静态检查结果}
+    返回：{"code": 修改后代码, "explanation": 说明, "issues": 标签, "static": 静态检查结果}
     """
     static = static_check(code)
 
@@ -95,6 +104,7 @@ def run(code: str, context: str = "") -> dict:
         return {
             "code": code,
             "explanation": f"## 语法错误\n\n{static['syntax_error']}\n\n代码无法解析，请先修复语法。",
+            "issues": ["syntax_error"],
             "static": static,
         }
 
@@ -121,13 +131,12 @@ def run(code: str, context: str = "") -> dict:
     response = client.chat([
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
-    ], temperature=0.2)
+    ], temperature=0.2, timeout=30)
 
-    parsed = parse_llm_output(response)
-    final_code = parsed["code"] or code
-
+    parsed = _parse(response)
     return {
-        "code": final_code,
+        "code": parsed["code"],
         "explanation": parsed["explanation"],
+        "issues": parsed["issues"],
         "static": static,
     }

@@ -1,5 +1,6 @@
 from utils.llm_client import get_client
 from agents import agent1_checker
+import re
 
 
 EVAL_SYSTEM_PROMPT = """你是一个代码评估专家。
@@ -33,17 +34,21 @@ BUG_CHECK_PROMPT = """你是一个代码审查专家。
 """
 
 
+_SCORE_RE = re.compile(
+    r"^[ \t]*(准确性|效率|可读性)[ \t]*[:：=][ \t]*([0-5](?:\.[0-9])?)[ \t]*(?:/[ \t]*5)?[ \t]*$",
+    re.M,
+)
+
+
 def parse_scores(text: str) -> dict:
-    """从 LLM 输出里提取三个维度的分数。"""
+    """从 LLM 输出里提取三个维度的分数。
+
+    修掉两个坑：原来是 re.findall(r"\\d") 逐位取数，
+    "4.5" 会变成 4、"10" 会变成 1，而且同一行出现多个维度时会串味。
+    """
     scores = {"准确性": 0, "效率": 0, "可读性": 0}
-    for line in text.split("\n"):
-        for key in scores:
-            if key in line:
-                # 提取数字
-                import re
-                nums = re.findall(r"\d", line)
-                if nums:
-                    scores[key] = int(nums[0])
+    for key, value in _SCORE_RE.findall(text or ""):
+        scores[key] = float(value)
     return scores
 
 
@@ -96,14 +101,21 @@ def evaluate(original_code: str, final_code: str, context: str = "") -> dict:
 
 
 def check_bugs(code: str) -> bool:
-    """检查代码是否有明显 bug。返回 True 表示有 bug。"""
+    """检查代码是否有明显 bug。返回 True 表示有 bug。
+
+    原来直接 `return "有bug" in response`，而 "没有bug" 里也含 "有bug"，
+    会把“没问题”判成“有 bug”，白触发一次回退重写。
+    """
     client = get_client()
     response = client.chat([
         {"role": "system", "content": BUG_CHECK_PROMPT},
         {"role": "user", "content": code},
     ], temperature=0.1)
 
-    return "有bug" in response
+    text = (response or "").strip().lower()
+    if any(word in text for word in ("没有bug", "无bug", "no bug", "no-bug", "没问题")):
+        return False
+    return "有bug" in text
 
 
 def run(

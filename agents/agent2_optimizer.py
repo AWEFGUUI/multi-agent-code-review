@@ -1,4 +1,6 @@
+from utils.issue_tags import ISSUES_INSTRUCTION
 from utils.llm_client import get_client
+from utils.llm_parse import parse_llm_output as _parse
 
 
 SYSTEM_PROMPT = """你是一个代码性能优化专家。
@@ -17,29 +19,18 @@ SYSTEM_PROMPT = """你是一个代码性能优化专家。
 输出格式：
 - 先输出一段 Markdown 说明（优化点列表 + 理由）
 - 然后用 python 代码块输出修改后的完整代码
-"""
+""" + ISSUES_INSTRUCTION
 
 
 def parse_llm_output(text: str) -> dict:
-    """从 LLM 输出里提取说明和代码。"""
-    if "```python" in text:
-        parts = text.split("```python")
-        explanation = parts[0].strip()
-        code = parts[1].split("```")[0].strip() if len(parts) > 1 else ""
-    elif "```" in text:
-        parts = text.split("```")
-        explanation = parts[0].strip()
-        code = parts[1].strip() if len(parts) > 1 else ""
-    else:
-        explanation = text.strip()
-        code = ""
-    return {"explanation": explanation, "code": code}
+    """向后兼容入口，实现见 utils.llm_parse。"""
+    return _parse(text, require_code=False)
 
 
-def run(code: str, context: str = "", timeout: int = 20, max_retries: int = 2) -> dict:
+def run(code: str, context: str = "", timeout: float = 20, max_retries: int = 2) -> dict:
     """
     执行 Agent 2。
-    返回：{"code": 优化后代码, "explanation": 说明}
+    返回：{"code": 优化后代码, "explanation": 说明, "issues": 标签}
     """
     user_prompt = f"""请优化以下 Python 代码的性能。
 
@@ -57,9 +48,9 @@ def run(code: str, context: str = "", timeout: int = 20, max_retries: int = 2) -
         {"role": "user", "content": user_prompt},
     ], temperature=0.3, timeout=timeout, max_retries=max_retries)
 
-    parsed = parse_llm_output(response)
-
+    parsed = _parse(response)
     return {
-        "code": parsed["code"] or code,
+        "code": parsed["code"],
         "explanation": parsed["explanation"],
+        "issues": parsed["issues"],
     }

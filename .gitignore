@@ -1,6 +1,11 @@
 .env
+.env.local
 output/
+runs/
 __pycache__/
 *.pyc
 .idea/
+.venv/
 venv/
+*.log
+.pytest_cache/

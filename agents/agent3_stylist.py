@@ -1,4 +1,6 @@
+from utils.issue_tags import ISSUES_INSTRUCTION
 from utils.llm_client import get_client
+from utils.llm_parse import parse_llm_output as _parse
 
 
 SYSTEM_PROMPT = """你是一个代码规范专家。
@@ -10,33 +12,23 @@ SYSTEM_PROMPT = """你是一个代码规范专家。
 4. 检查鲁棒性（异常处理、边界条件）
 
 如果有改进空间，直接修改代码。修改后必须保持功能不变。
+不要在没有必要时新增 print 之类的副作用，否则会改变程序行为。
 
 输出格式：
 - 先输出一段 Markdown 说明（修改点列表 + 理由）
 - 然后用 python 代码块输出修改后的完整代码
-"""
+""" + ISSUES_INSTRUCTION
 
 
 def parse_llm_output(text: str) -> dict:
-    """从 LLM 输出里提取说明和代码。"""
-    if "```python" in text:
-        parts = text.split("```python")
-        explanation = parts[0].strip()
-        code = parts[1].split("```")[0].strip() if len(parts) > 1 else ""
-    elif "```" in text:
-        parts = text.split("```")
-        explanation = parts[0].strip()
-        code = parts[1].strip() if len(parts) > 1 else ""
-    else:
-        explanation = text.strip()
-        code = ""
-    return {"explanation": explanation, "code": code}
+    """向后兼容入口，实现见 utils.llm_parse。"""
+    return _parse(text, require_code=False)
 
 
-def run(code: str, context: str = "") -> dict:
+def run(code: str, context: str = "", timeout: float = 30) -> dict:
     """
     执行 Agent 3。
-    返回：{"code": 规范后代码, "explanation": 说明}
+    返回：{"code": 规范后代码, "explanation": 说明, "issues": 标签}
     """
     user_prompt = f"""请检查以下 Python 代码的规范性。
 
@@ -52,11 +44,11 @@ def run(code: str, context: str = "") -> dict:
     response = client.chat([
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_prompt},
-    ], temperature=0.3)
+    ], temperature=0.3, timeout=timeout)
 
-    parsed = parse_llm_output(response)
-
+    parsed = _parse(response)
     return {
-        "code": parsed["code"] or code,
+        "code": parsed["code"],
         "explanation": parsed["explanation"],
+        "issues": parsed["issues"],
     }
